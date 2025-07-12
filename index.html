@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ボカロ検索アプリ</title>
+  <link rel="stylesheet" href="https://unpkg.com/onsenui/css/onsenui.min.css" />
+  <link rel="stylesheet" href="https://unpkg.com/onsenui/css/onsen-css-components.min.css" />
+  <script src="https://unpkg.com/onsenui/js/onsenui.min.js"></script>
+  <style>
+    #scrollable {
+      height: calc(100vh - 160px);
+      overflow-y: auto;
+      padding: 10px;
+    }
+    #results, #favoritesList, #recommendationResult {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 16px;
+    }
+    .video-card {
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      cursor: pointer;
+      overflow: hidden;
+      background: #fff;
+      display: flex;
+      flex-direction: column;
+    }
+    .thumbnail {
+      width: 100%;
+      display: block;
+      border-bottom: 1px solid #ddd;
+      border-radius: 8px 8px 0 0;
+      flex-shrink: 0;
+    }
+    .video-info {
+      padding: 8px 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #fff;
+      flex-grow: 1;
+    }
+    .video-title {
+      flex-grow: 1;
+      font-weight: bold;
+      font-size: 16px;
+      margin-right: 8px;
+      word-break: break-word;
+      cursor: pointer;
+    }
+    .buttons {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    .fav-btn {
+      font-size: 24px;
+      cursor: pointer;
+      color: gold;
+      user-select: none;
+      line-height: 1;
+    }
+    .youtube-btn {
+      width: 32px;
+      height: 24px;
+      cursor: pointer;
+      user-select: none;
+      fill: #FF0000;
+    }
+    .mode-switch-container {
+      display: flex;
+      align-items: center;
+      margin-left: 10px;
+    }
+    .mode-switch-container label {
+      margin-right: 8px;
+      font-weight: bold;
+    }
+  </style>
+</head>
+<body>
+  <ons-splitter>
+    <ons-splitter-side id="sideMenu" side="left" width="220px" collapse swipeable>
+      <ons-page>
+        <ons-list>
+          <ons-list-item tappable onclick="switchTab('search')">🔍 検索</ons-list-item>
+          <ons-list-item tappable onclick="switchTab('favorites')">★ お気に入り</ons-list-item>
+          <ons-list-item tappable onclick="switchTab('recommendation')">💡 おすすめ</ons-list-item>
+        </ons-list>
+      </ons-page>
+    </ons-splitter-side>
+
+    <ons-splitter-content>
+      <ons-page id="mainPage">
+        <ons-toolbar>
+          <div class="left">
+            <ons-toolbar-button onclick="document.getElementById('sideMenu').open()">☰</ons-toolbar-button>
+          </div>
+          <div class="center" id="toolbarTitle">ボカロ検索</div>
+          <div class="right">
+            <div class="mode-switch-container">
+              <label for="workModeSwitch">作業用モード</label>
+              <ons-switch id="workModeSwitch" onchange="onWorkModeChange(this.checked)"></ons-switch>
+            </div>
+          </div>
+        </ons-toolbar>
+
+        <div id="searchTab" style="display:block; padding: 10px;">
+          <ons-input id="searchWord" placeholder="曲名・作者など" float></ons-input><br /><br />
+          <ons-button onclick="startSearch()">検索</ons-button>
+          <div id="scrollable">
+            <div id="results"></div>
+            <div id="loading" style="text-align:center; display:none;">読み込み中...</div>
+          </div>
+        </div>
+
+        <div id="favoritesTab" style="display:none; padding: 10px;">
+          <div id="favoritesList"></div>
+          <div id="favEmptyMsg" style="text-align:center; margin-top:20px; color:#777;">お気に入り動画はありません。</div>
+        </div>
+
+        <div id="recommendationTab" style="display:none; padding: 10px;">
+          <div id="recommendationResult"></div>
+          <div id="recLoading" style="text-align:center; display:none;">読み込み中...</div>
+        </div>
+      </ons-page>
+    </ons-splitter-content>
+  </ons-splitter>
+
+  <ons-dialog id="videoDialog" cancelable>
+    <div style="width: 100%; height: 100%; display: flex; flex-direction: column;">
+      <div id="player"></div>
+      <ons-button onclick="hideVideoDialog()" style="margin: 8px;">閉じる</ons-button>
+    </div>
+  </ons-dialog>
+
+  <!-- YouTube Iframe API 読み込み -->
+  <script src="https://www.youtube.com/iframe_api"></script>
+
+  <script>
+    const apiKey = 'AIzaSyD2RS8hUgC5HBWmO11EXmnsps95XlpRuzo';
+
+    let nextPageToken = null;
+    let currentKeyword = '';
+    let isLoading = false;
+    let currentTab = 'search';
+    let workMode = false;
+    let favoritePlayIndex = 0;
+    let favorites = [];
+
+    let player;  // YouTubeプレイヤーオブジェクト
+    let currentPlayingVideoId = null;
+
+    function switchTab(tab) {
+      currentTab = tab;
+      document.getElementById('searchTab').style.display = tab === 'search' ? 'block' : 'none';
+      document.getElementById('favoritesTab').style.display = tab === 'favorites' ? 'block' : 'none';
+      document.getElementById('recommendationTab').style.display = tab === 'recommendation' ? 'block' : 'none';
+
+      document.getElementById('toolbarTitle').textContent =
+        tab === 'search' ? 'ボカロ検索' :
+        tab === 'favorites' ? 'お気に入り' :
+        'おすすめ';
+
+      if (tab === 'favorites') {
+        renderFavorites();
+      } else if (tab === 'recommendation') {
+        loadRecommendation();
+      }
+
+      document.getElementById('sideMenu').close();
+    }
+
+    function startSearch() {
+      const keyword = document.getElementById('searchWord').value.trim();
+      if (!keyword) {
+        ons.notification.alert('検索キーワードを入力してください');
+        return;
+      }
+      currentKeyword = keyword;
+      nextPageToken = null;
+      document.getElementById('results').innerHTML = '';
+      loadMore();
+    }
+
+    function loadMore() {
+      if (isLoading || !currentKeyword || currentTab !== 'search') return;
+      isLoading = true;
+      document.getElementById('loading').style.display = 'block';
+
+      let url = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(currentKeyword + ' ボカロ')}&type=video&key=${apiKey}&maxResults=8`;
+      if (nextPageToken) {
+        url += `&pageToken=${nextPageToken}`;
+      }
+
+      fetch(url)
+        .then(res => res.json())
+        .then(data => {
+          nextPageToken = data.nextPageToken || null;
+          if (!data.items || data.items.length === 0) {
+            if (nextPageToken === null) {
+              ons.notification.alert('該当する動画が見つかりませんでした。');
+            }
+            isLoading = false;
+            document.getElementById('loading').style.display = 'none';
+            return;
+          }
+
+          saveSearchHistory(currentKeyword);
+
+          let html = '';
+          data.items.forEach(item => {
+            if (item.id.kind !== 'youtube#video') return;
+            const videoId = item.id.videoId;
+            const title = item.snippet.title;
+            const thumbnail = item.snippet.thumbnails.medium.url;
+            html += createVideoCard(videoId, title, thumbnail);
+          });
+
+          document.getElementById('results').insertAdjacentHTML('beforeend', html);
+          isLoading = false;
+          document.getElementById('loading').style.display = 'none';
+        })
+        .catch(err => {
+          console.error(err);
+          ons.notification.alert('通信エラーが発生しました。');
+          isLoading = false;
+          document.getElementById('loading').style.display = 'none';
+        });
+    }
+
+    function createVideoCard(videoId, title, thumbnail) {
+      const isFav = isFavorite(videoId);
+      return `
+        <div class="video-card">
+          <img class="thumbnail" src="${thumbnail}" alt="${escapeHTML(title)}" onclick="playVideo('${videoId}')">
+          <div class="video-info">
+            <div class="video-title" onclick="playVideo('${videoId}')">${title}</div>
+            <div class="buttons">
+              <div class="fav-btn" onclick="toggleFavorite(event, '${videoId}', '${escapeHTML(title)}', '${thumbnail}')" title="お気に入り登録">
+                ${isFav ? '★' : '☆'}
+              </div>
+              <img
+                class="youtube-btn"
+                src="https://lh3.googleusercontent.com/cMpEKg_pt7YpeFRv98dJ3rgzVpzQU0oBwL2DEtJJ9HlZk87CW1nw6GfdhI7TvWQbIyvdL2rYIGwzGUO1Dufh=w92-h92"
+                alt="YouTube"
+                title="YouTubeで開く"
+                onclick="openYoutube('${videoId}')"
+                style="width:32px; height:32px; cursor:pointer;"
+              />
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    // YouTube Iframe APIが読み込まれた時に呼ばれる関数
+    function onYouTubeIframeAPIReady() {
+      player = new YT.Player('player', {
+        height: '300',
+        width: '100%',
+        videoId: '',
+        events: {
+          'onStateChange': onPlayerStateChange
+        },
+        playerVars: {
+          autoplay: 1,
+          controls: 1,
+          rel: 0,
+          fs: 1,
+          modestbranding: 1
+        }
+      });
+    }
+
+    // プレイヤー状態変化イベント（動画終了を検知）
+    function onPlayerStateChange(event) {
+      if (event.data === YT.PlayerState.ENDED && workMode) {
+        favoritePlayIndex++;
+        playFavoriteByIndex(favoritePlayIndex);
+      }
+    }
+
+    // 動画再生開始
+    function playVideo(videoId) {
+      currentPlayingVideoId = videoId;
+      document.getElementById('videoDialog').show();
+      if (!player) {
+        // プレイヤー準備前はiframeで普通に再生
+        const playerDiv = document.getElementById('player');
+        playerDiv.innerHTML = `<iframe width="100%" height="300" src="https://www.youtube.com/embed/${videoId}?autoplay=1&fs=1" frameborder="0" allow="autoplay; encrypted-media" allowfullscreen></iframe>`;
+      } else {
+        player.loadVideoById(videoId);
+      }
+    }
+
+    function hideVideoDialog() {
+      document.getElementById('videoDialog').hide();
+      if (player) {
+        player.stopVideo();
+      } else {
+        const playerDiv = document.getElementById('player');
+        playerDiv.innerHTML = '';
+      }
+      if (workMode) {
+        favoritePlayIndex++;
+        playFavoriteByIndex(favoritePlayIndex);
+      }
+    }
+
+    function openYoutube(videoId) {
+      window.open(`https://www.youtube.com/watch?v=${videoId}`, '_blank');
+    }
+
+    function toggleFavorite(event, videoId, title, thumbnail) {
+      event.stopPropagation();
+      if (isFavorite(videoId)) {
+        removeFavorite(videoId);
+      } else {
+        addFavorite({ videoId, title, thumbnail });
+      }
+      renderFavorites();
+      if (currentTab === 'search') {
+        updateSearchResultsFavoriteIcon(videoId);
+      }
+      event.target.textContent = isFavorite(videoId) ? '★' : '☆';
+    }
+
+    function updateSearchResultsFavoriteIcon(videoId) {
+      const favButtons = document.querySelectorAll('.fav-btn');
+      favButtons.forEach(btn => {
+        if (btn.onclick && btn.onclick.toString().includes(`'${videoId}'`)) {
+          btn.textContent = isFavorite(videoId) ? '★' : '☆';
+        }
+      });
+    }
+
+    function renderFavorites() {
+      const favs = getFavorites();
+      const container = document.getElementById('favoritesList');
+      const emptyMsg = document.getElementById('favEmptyMsg');
+      if (favs.length === 0) {
+        container.innerHTML = '';
+        emptyMsg.style.display = 'block';
+        return;
+      }
+      emptyMsg.style.display = 'none';
+
+      let html = '';
+      favs.forEach(fav => {
+        html += `
+          <div class="video-card">
+            <img class="thumbnail" src="${fav.thumbnail}" alt="${escapeHTML(fav.title)}" onclick="playVideo('${fav.videoId}')">
+            <div class="video-info">
+              <div class="video-title" onclick="playVideo('${fav.videoId}')">${fav.title}</div>
+              <div class="buttons">
+                <div class="fav-btn" onclick="toggleFavorite(event, '${fav.videoId}', '${escapeHTML(fav.title)}', '${fav.thumbnail}')" title="お気に入り解除">★</div>
+                <img
+                  class="youtube-btn"
+                  src="https://lh3.googleusercontent.com/cMpEKg_pt7YpeFRv98dJ3rgzVpzQU0oBwL2DEtJJ9HlZk87CW1nw6GfdhI7TvWQbIyvdL2rYIGwzGUO1Dufh=w92-h92"
+                  alt="YouTube"
+                  title="YouTubeで開く"
+                  onclick="openYoutube('${fav.videoId}')"
+                  style="width:32px; height:32px; cursor:pointer;"
+                />
+              </div>
+            </div>
+          </div>
+        `;
+      });
+      container.innerHTML = html;
+    }
+
+    function addFavorite(video) {
+      const favs = getFavorites();
+      if (!favs.find(f => f.videoId === video.videoId)) {
+        favs.push(video);
+        localStorage.setItem('favorites', JSON.stringify(favs));
+      }
+    }
+
+    function removeFavorite(videoId) {
+      let favs = getFavorites();
+      favs = favs.filter(f => f.videoId !== videoId);
+      localStorage.setItem('favorites', JSON.stringify(favs));
+    }
+
+    function isFavorite(videoId) {
+      const favs = getFavorites();
+      return favs.some(f => f.videoId === videoId);
+    }
+
+    function getFavorites() {
+      return JSON.parse(localStorage.getItem('favorites') || '[]');
+    }
+
+    function saveSearchHistory(keyword) {
+      let history = JSON.parse(localStorage.getItem('searchHistory') || '[]');
+      if (!history.includes(keyword)) {
+        history.unshift(keyword);
+        if (history.length > 20) history.pop();
+        localStorage.setItem('searchHistory', JSON.stringify(history));
+      }
+    }
+
+    function getSearchHistory() {
+      return JSON.parse(localStorage.getItem('searchHistory') || '[]');
+    }
+
+    // おすすめ動画読み込み（修正済み）
+    function loadRecommendation() {
+      const container = document.getElementById('recommendationResult');
+      const recLoading = document.getElementById('recLoading');
+      recLoading.style.display = 'block';
+
+      const history = getSearchHistory();
+      const favorites = getFavorites();
+
+      const keywords = [];
+
+      if (history.length > 0) {
+        keywords.push(history[0]);
+      }
+      if (favorites.length > 0) {
+        favorites.forEach(fav => {
+          keywords.push(fav.title);
+        });
+      }
+
+      const uniqueKeywords = [...new Set(keywords)];
+
+      if (uniqueKeywords.length === 0) {
+        container.innerHTML = '<p style="text-align:center; color:#777;">おすすめ動画がありません。</p>';
+        recLoading.style.display = 'none';
+        return;
+      }
+
+      Promise.all(uniqueKeywords.map(k => fetchRecommendation(k)))
+        .then(results => {
+          let allVideos = [];
+          results.forEach(arr => {
+            allVideos = allVideos.concat(arr);
+          });
+
+          allVideos = allVideos.filter((v, i, self) => self.findIndex(x => x.id.videoId === v.id.videoId) === i);
+
+          if (allVideos.length === 0) {
+            container.innerHTML = '<p style="text-align:center; color:#777;">おすすめ動画が見つかりませんでした。</p>';
+            recLoading.style.display = 'none';
+            return;
+          }
+
+          let html = '';
+          allVideos.forEach(item => {
+            const videoId = item.id.videoId;
+            const title = item.snippet.title;
+            const thumbnail = item.snippet.thumbnails.medium.url;
+            html += createVideoCard(videoId, title, thumbnail);
+          });
+
+          container.innerHTML = html;
+          recLoading.style.display = 'none';
+        })
+        .catch(() => {
+          container.innerHTML = '<p style="text-align:center; color:#777;">おすすめ動画の取得に失敗しました。</p>';
+          recLoading.style.display = 'none';
+        });
+    }
+
+    function fetchRecommendation(keyword) {
+      const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&q=${encodeURIComponent(keyword + ' ボカロ')}&type=video&key=${apiKey}&maxResults=6`;
+      return fetch(url).then(res => res.json()).then(data => data.items || []);
+    }
+
+    function escapeHTML(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // 作業用モード切替時の処理
+    function onWorkModeChange(checked) {
+      workMode = checked;
+      if (workMode) {
+        favorites = getFavorites();
+        if (favorites.length === 0) {
+          ons.notification.alert('お気に入り動画がありません。作業用モードを開始できません。');
+          document.getElementById('workModeSwitch').checked = false;
+          workMode = false;
+          return;
+        }
+        favoritePlayIndex = 0;
+        playFavoriteByIndex(favoritePlayIndex);
+      } else {
+        stopPlayback();
+      }
+    }
+
+    // お気に入り連続再生開始
+    function playFavoriteByIndex(index) {
+      if (index < 0 || index >= favorites.length) {
+        // お気に入り再生終了
+        workMode = false;
+        document.getElementById('workModeSwitch').checked = false;
+        hideVideoDialog();
+        return;
+      }
+      const video = favorites[index];
+      playVideo(video.videoId);
+    }
+
+    // 再生停止
+    function stopPlayback() {
+      if (player) {
+        player.stopVideo();
+      }
+      hideVideoDialog();
+    }
+
+    // 閉じるボタン押下時
+    function hideVideoDialog() {
+      document.getElementById('videoDialog').hide();
+      if (player) {
+        player.stopVideo();
+      }
+      if (workMode) {
+        favoritePlayIndex++;
+        playFavoriteByIndex(favoritePlayIndex);
+      }
+    }
+
+    // Enterキーで検索可能に
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('searchWord').addEventListener('keypress', e => {
+        if (e.key === 'Enter') {
+          startSearch();
+        }
+      });
+
+      document.getElementById('scrollable').addEventListener('scroll', () => {
+        const scrollable = document.getElementById('scrollable');
+        const nearBottom = scrollable.scrollTop + scrollable.clientHeight >= scrollable.scrollHeight - 50;
+        if (nearBottom && nextPageToken && !isLoading && currentTab === 'search') {
+          loadMore();
+        }
+      });
+
+      switchTab('search');
+    });
+  </script>
+</body>
+</html>
